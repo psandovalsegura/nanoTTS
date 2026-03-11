@@ -8,9 +8,9 @@
 
 ## install
 
-1. install [WavTokenizer](https://github.com/jishengpeng/WavTokenizer?tab=readme-ov-file)
-2. additional packages in requirements.txt
+1. install [WavTokenizer](https://github.com/jishengpeng/WavTokenizer?tab=readme-ov-file). you will need to add a *pyproject.toml* file to your clone of that repo so that you can install `packages = ["encoder", "decoder"]`.
+2. additional packages in requirements.txt.
 
 ## other
 
-- to retrain BPE tokenizer: `python libritts_tokenizer.py` which will use transcripts and ids from **libritts_tokenizer_data.pkl** and save **libritts_bpe.json**.
+- to retrain BPE tokenizer: `python libritts_tokenizer.py` which will use transcripts and ids from *libritts_tokenizer_data.pkl* and save *libritts_bpe.json*.

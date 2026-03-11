@@ -20,11 +20,11 @@ tokenizer = Tokenizer(BPE(unk_token="<UNK>"))
 tokenizer.pre_tokenizer = Whitespace()
 
 # 3. configure the Trainer for exactly 2048 tokens after adding the speaker tokens
-VOCAB_SIZE = 2048 
+LIBRITTS_VOCAB_SIZE = 2048 
 alphabet = list(string.ascii_letters + string.digits + string.punctuation)
 
 trainer = BpeTrainer(
-    vocab_size=VOCAB_SIZE - len(speaker_ids),
+    vocab_size=LIBRITTS_VOCAB_SIZE - len(speaker_ids),
     initial_alphabet=alphabet,
     special_tokens=core_specials,
     show_progress=True
@@ -41,9 +41,9 @@ tokenizer.save("libritts_bpe.json")
 # ==========================================
 # Tests
 # ==========================================
-assert tokenizer.get_vocab_size(with_added_tokens=False) == VOCAB_SIZE - len(speaker_ids), f'text vocab size should be {VOCAB_SIZE - len(speaker_ids)}'
-assert tokenizer.get_vocab_size(with_added_tokens=True) == VOCAB_SIZE, f'total vocab size should be {VOCAB_SIZE}'
-assert tokenizer.token_to_id(speaker_tokens[0]) == VOCAB_SIZE - len(speaker_ids), f'first speaker token ID should be {VOCAB_SIZE - len(speaker_ids)}'
+assert tokenizer.get_vocab_size(with_added_tokens=False) == LIBRITTS_VOCAB_SIZE - len(speaker_ids), f'text vocab size should be {LIBRITTS_VOCAB_SIZE - len(speaker_ids)}'
+assert tokenizer.get_vocab_size(with_added_tokens=True) == LIBRITTS_VOCAB_SIZE, f'total vocab size should be {LIBRITTS_VOCAB_SIZE}'
+assert tokenizer.token_to_id(speaker_tokens[0]) == LIBRITTS_VOCAB_SIZE - len(speaker_ids), f'first speaker token ID should be {LIBRITTS_VOCAB_SIZE - len(speaker_ids)}'
 
 test_string = f"<BOS>Hello world!<SPK_19><AUDIO_START><EOS><PAD><PAD>"
 encoded = tokenizer.encode(test_string)
