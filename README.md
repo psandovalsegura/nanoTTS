@@ -1,10 +1,11 @@
 # nanoTTS
 
-**goal**: build a minimal, simple, hackable text-to-speech (TTS) system using a GPT-2-style transformer decoder.
+**goal**: a minimal, simple, hackable text-to-speech (TTS) system using a GPT-2-style transformer decoder.
 
 **key design decisions**:
 1. look like an LLM: tokens in, tokens out. no extra modules, no added complexity.
-2. keep it as simple as possible. follow [nanoGPT](https://github.com/karpathy/nanoGPT).
+2. keep architecture as simple as possible. follow [nanoGPT](https://github.com/karpathy/nanoGPT).
+3. audio tokens from wavtokenizer: a SOTA approach for converting audio to a short sequence of discrete tokens
 
 ## install
 

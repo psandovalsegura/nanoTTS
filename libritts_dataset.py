@@ -43,7 +43,32 @@ class TTSDataset(Dataset):
         astart_idx = (X == self.astart_id).nonzero(as_tuple=True)[0].item()
         Y[:astart_idx] = -100 
 
+        # our model only predicts audio tokens, so target audio token ids should be in the range [0, 4096)
+        Y[Y >= AUDIO_OFFSET] -= AUDIO_OFFSET
+        # we must also remap <EOS> token to be 4096
+        Y[Y == self.eos_id] = AUDIO_VOCAB_SIZE
+
         return X, Y
+    
+    def _get_waveform_from_generated_sequence(self, sequence):
+        assert isinstance(sequence, torch.Tensor)
+        assert sequence.shape[0] == 1, "batch size must be 1 for inference"
+        assert sequence.ndim == 2, "input sequence should have shape (1, seq_len)"
+        # get generated audio tokens
+        astart_idx = (sequence == self.astart_id).nonzero(as_tuple=True)[1].item()
+        audio_ids = sequence[:, astart_idx+1:]
+
+        # find earliest <EOS> token. if it doesn't exist, use the full generated sequence
+        eos_mask = (audio_ids == self.eos_id) 
+        if eos_mask.any():
+            eos_idx = eos_mask.nonzero(as_tuple=True)[1].min().item()
+            audio_ids = audio_ids[:, :eos_idx]
+
+        # generated sequence is in input space, so convert audio tokens back to [0, 4095] range
+        audio_ids -= AUDIO_OFFSET
+        features = self.wav_tokenizer.codes_to_features(audio_ids)
+        audio_out = self.wav_tokenizer.decode(features, bandwidth_id=self.wav_tokenizer.bandwidth_id)
+        return audio_out
 
 def create_collate_fn(pad_id):
     def collate_fn(batch):
