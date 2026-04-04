@@ -37,6 +37,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from model import GPTConfig, GPT
 from libritts_dataset import TTSDataset, create_collate_fn # @psando
 from decoder.pretrained import WavTokenizer                # @psando 
+from tokenizer import create_joint_tokenizer
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -45,8 +46,9 @@ out_dir = '/fs/nexus-scratch/psando/nanotts'
 eval_interval = 100
 log_interval = 10
 eval_iters = 4
-eval_only = False # if True, script exits right after the first eval
-always_save_checkpoint = False # if True, always save a checkpoint after each eval
+eval_only = False      # if True, script exits right after the first eval
+save_checkpoint = True # if True, always save a checkpoint after each eval
+save_interval = 5000   # must be a multiple of eval_interval
 init_from = 'scratch' # 'scratch' or 'resume'
 # wandb logging
 wandb_log = True # disabled by default
@@ -55,7 +57,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset_root = '/fs/nexus-scratch/psando' # @psando
 dataset_url = 'train-clean-100'           # @psando
-bpe_tokenizer_path = 'libritts_bpe.json'  # @psando
+bpe_tokenizer_path = 'tokenizer/libritts_bpe.json'  # @psando
 gradient_accumulation_steps = 1 # TODO: @psando: tune after shard dataset, 4 #5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 2048                         # @psando
@@ -92,7 +94,8 @@ config_keys = [k for k,v in globals().items() if not k.startswith('_') and isins
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
-
+if save_checkpoint:
+    assert save_interval % eval_interval == 0, "save_interval must be a multiple of eval_interval to save checkpoints"
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:
@@ -143,10 +146,11 @@ bandwidth_id = torch.tensor([0], device=wt_device)
 if not hasattr(wavtokenizer, 'bandwidth_id'):
     wavtokenizer.bandwidth_id = bandwidth_id
 
+joint_tokenizer = create_joint_tokenizer(bpe_tokenizer_path, wavtokenizer)
+
 tts_dataset = TTSDataset(
     libritts_dataset=libritts_dataset,
-    bpe_tokenizer_path=bpe_tokenizer_path,
-    wav_tokenizer=wavtokenizer
+    tokenizer=joint_tokenizer,
 )
 
 dataloader = torch.utils.data.DataLoader(
@@ -161,7 +165,7 @@ dataloader_iter = iter(dataloader)
 dataloader_iter_estimate = iter(dataloader)
 
 # @psando: validation will just choose one of a few prompts, and a random speaker id
-val_prompts = ['My name is Pedro Sandoval Segura.', 'Nano text-to-speech was created at University of Maryland.']
+val_prompts = ['The Law.', 'The cat sat on the mat.', 'My name is Pedro Sandoval Segura.', 'Nano text to speech was created at University of Maryland.', 'Created at University of Maryland']
 val_speaker_ids = [19, 26, 27]
 
 def get_batch(split):
@@ -187,7 +191,7 @@ def get_val_batch():
     normalized_text = random.choice(val_prompts)
     speaker_id = random.choice(val_speaker_ids)
     prompt_string = f"<BOS>{normalized_text}<SPK_{speaker_id}><AUDIO_START>"
-    text_ids = tts_dataset.text_tokenizer.encode(prompt_string).ids 
+    text_ids = joint_tokenizer.encode_text(prompt_string)
     caption = f'spk_{speaker_id}_{normalized_text.replace(" ", "_")}'
     batch = torch.tensor(text_ids, dtype=torch.long).unsqueeze(0).to(device)
     return batch, caption
@@ -203,7 +207,7 @@ if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")     
     gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
+    model = GPT(gptconf, joint_tokenizer) # @psando
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
@@ -212,11 +216,11 @@ elif init_from == 'resume':
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
+    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias']:
         model_args[k] = checkpoint_model_args[k]
     # create the model
     gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
+    model = GPT(gptconf, joint_tokenizer) # @psando
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -268,8 +272,8 @@ def estimate_val():
 
     # generate an audio sample
     val, caption = get_val_batch()
-    val_cont = model.generate(val, max_new_tokens=500, temperature=1.0, top_k=None)
-    out['gen_audio'] = tts_dataset._get_waveform_from_generated_sequence(val_cont.cpu())
+    val_cont = model.generate(val, max_new_tokens=500, temperature=0.8, top_k=50)
+    out['gen_audio'] = joint_tokenizer.decode(val_cont.cpu())
     out['gen_caption'] = caption
     model.train()
     return out
@@ -318,7 +322,7 @@ while True:
                 "gen_audio": wandb.Audio(out['gen_audio'].numpy().T, sample_rate=24000, caption=out['gen_caption']),
                 "mfu": running_mfu*100, # convert to percentage
             })
-        if always_save_checkpoint:
+        if save_checkpoint and iter_num > 0 and iter_num % save_interval == 0:
             # best_val_loss = losses['val']
             if iter_num > 0:
                 checkpoint = {

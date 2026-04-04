@@ -14,8 +14,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from libritts_dataset import AUDIO_OFFSET, TOTAL_VOCAB_SIZE, AUDIO_VOCAB_SIZE
-
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -108,9 +106,7 @@ class Block(nn.Module):
 
 @dataclass
 class GPTConfig:
-    block_size: int = 2048             # @psnado: double the block size of GPT-2
-    in_vocab_size: int = TOTAL_VOCAB_SIZE  # @psando: 2048 text + 4096 audio = 6144 total possible input tokens
-    out_vocab_size: int = AUDIO_VOCAB_SIZE + 1 # @psando: only use 4096 audio output tokens + audio space <EOS>
+    block_size: int = 2048             # @psando: double the block size of GPT-2
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
@@ -119,11 +115,15 @@ class GPTConfig:
 
 class GPT(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, joint_tokenizer): # @psando: added joint_tokenizer to constructor
         super().__init__()
-        assert config.in_vocab_size is not None
-        assert config.out_vocab_size is not None
         assert config.block_size is not None
+        config.in_vocab_size = joint_tokenizer.in_vocab_size
+        config.out_vocab_size = joint_tokenizer.out_vocab_size
+        config.audio_vocab_size = joint_tokenizer.audio_vocab_size
+        config.audio_offset = joint_tokenizer.audio_offset
+        config.in_eos_id = joint_tokenizer.in_eos_id
+        config.out_eos_id = joint_tokenizer.out_eos_id
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
@@ -274,11 +274,14 @@ class GPT(nn.Module):
             # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1)
             # append sampled index to the running sequence and continue
-            # @psando: the audio token must be converted back to input token space
-            if idx_next.item() < AUDIO_VOCAB_SIZE: # if it's an audio token, add proper offset
-                idx_next += AUDIO_OFFSET
-            else: # if it's the <EOS> token in target space, we must remap to input space
-                idx_next = torch.tensor([[3]], dtype=torch.long, device=idx.device) # <EOS> token ID in input space is 3 TODO: @psando: remove magic number
+            if idx_next.item() < self.config.audio_vocab_size: 
+                # @psando: convert output audio token back to input token space
+                idx_next += self.config.audio_offset
+            elif idx_next.item() == self.config.out_eos_id:
+                # @psando: convert output <EOS> token to input space
+                idx_next = torch.tensor([[self.config.in_eos_id]], dtype=torch.long, device=idx.device)
+            else:
+                raise ValueError(f"Generated token id {idx_next.item()} is out of range.")
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx

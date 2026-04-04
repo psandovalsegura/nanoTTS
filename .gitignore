@@ -4,12 +4,12 @@
 .vscode
 __pycache__/
 *.bin
-*.pkl
 *.pt
 *.pyc
 input.txt
 env/
 venv/
 wandb/
+.codex
 2026-*.ipynb
 *.out
