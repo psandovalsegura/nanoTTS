@@ -6,6 +6,9 @@
 
 **demo**: after ~9 epochs over 53.78 hours of English text + audio pairs.
 
+<video src="assets/nanoTTS_video.mp4" controls width="720"></video>
+
+
 **key design decisions**:
 1. look like an LLM: tokens in, tokens out. no extra modules, no added complexity.
 2. keep architecture as simple as possible. follow [nanoGPT](https://github.com/karpathy/nanoGPT).
@@ -23,7 +26,7 @@
 | --- | --- |
 | `train.py` | main training script; loads LibriTTS, builds the model/tokenizers, and runs training or resume-from-checkpoint |
 | `model.py` | GPT-style decoder-only transformer used for next-token prediction over the joint text/audio sequence |
-| `libritts_dataset.py` | dataset wrapper that converts raw LibriTTS examples into `[BOS, text, speaker id, AUDIO_START, audio tokens, EOS]` training sequences |
+| `libritts_dataset.py` | dataset wrapper that converts raw LibriTTS examples into `[BOS, text tokens, SPK_ID, AUDIO_START, audio tokens, EOS]` training sequences |
 | `tokenizer.py` | joint tokenizer interface that combines the text tokenizer with WavTokenizer audio codes and handles decode for inference |
 | `configurator.py` | lightweight config override helper used by `train.py` for command-line and file-based hyperparameter overrides |
 | `text_tokenizer/libritts_tokenizer.py` | script that trains the BPE text tokenizer and appends speaker-id special tokens |
@@ -37,7 +40,7 @@
 
 ```bibtex
 @misc{sandovalsegura2026nanotts,
-  title={nanoTTS: Minimal Decoder-Only Text-to-Speech},
+  title={nanoTTS: Minimal Text-to-Speech using nanoGPT},
   author={Pedro Sandoval-Segura},
   year={2026},
   note={GitHub repository}
