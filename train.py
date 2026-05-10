@@ -44,7 +44,7 @@ from tokenizer import create_joint_tokenizer
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
-out_dir = '/fs/nexus-scratch/psando/nanotts'
+out_dir = '/fs/nexus-scratch/psando/nanotts-05-10'
 eval_interval = 100
 log_interval = 10
 eval_iters = 50
@@ -58,11 +58,11 @@ wandb_project = 'nanotts'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
 dataset_root = '/fs/nexus-scratch/psando'       # @psando
-dataset_train_url = 'train-clean-360'           # @psando
-dataset_dev_url = 'dev-clean'                   # @psando
+dataset_train_url = 'train-clean-100,train-clean-360'    # @psando: allow training on multiple splits, comma separated
+dataset_dev_url = 'dev-clean'                            # @psando
 bpe_tokenizer_path = 'text_tokenizer/libritts_bpe.json'  # @psando
 gradient_accumulation_steps = 2 # TODO: @psando: tune after shard dataset, 4 #5 * 8 # used to simulate larger batch sizes
-batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
+batch_size = 24 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 2048                         # @psando
 # @psando: wavtokenizer
 wavtokenizer_dir = '/fs/nexus-scratch/psando/WavTokenizer'
@@ -122,6 +122,7 @@ else:
     ddp_world_size = 1
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
+config['tokens_per_iter'] = tokens_per_iter
 
 out_dir = os.path.join(out_dir, wandb_run_name)
 if master_process:
@@ -135,11 +136,14 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # @psando: add libritts dataset and wavtokenizer
-train_dataset = torchaudio.datasets.LIBRITTS(
-    root=dataset_root,
-    url=dataset_train_url,
-    download=False,
-)
+train_dataset = torch.utils.data.ConcatDataset([
+    torchaudio.datasets.LIBRITTS(
+        root=dataset_root,
+        url=url,
+        download=False,
+    )
+    for url in dataset_train_url.split(',')
+])
 val_dataset = torchaudio.datasets.LIBRITTS(
     root=dataset_root,
     url=dataset_dev_url,
@@ -179,6 +183,9 @@ dataloader = torch.utils.data.DataLoader(
     num_workers=4,
     collate_fn=create_collate_fn(train_tts_dataset.pad_id)
 )
+
+config['train_dataset_len'] = len(train_tts_dataset)
+print(f"train dataset length: {len(train_tts_dataset):,}")
 
 # Test dataset and dataloader
 val_tts_dataset = TTSDataset(
@@ -372,13 +379,19 @@ while True:
         out = estimate_loss()
         print(f"step {iter_num}: train loss {out['estimate_train']:.4f}, val loss {out['val']:.4f}")
         if wandb_log:
+            if out['gen_audio'] is None:
+                gen_audio = torch.zeros(2400, 1).numpy()
+                gen_caption = "error: no audio tokens"
+            else:
+                gen_audio = out['gen_audio'].numpy().T
+                gen_caption = out['gen_caption']
             wandb.log({
                 "iter": iter_num,
                 "epoch": train_epoch,
                 "train_loss": out['estimate_train'],
                 "val_loss": out['val'],
                 "lr": lr,
-                "gen_audio": wandb.Audio(out['gen_audio'].numpy().T, sample_rate=24000, caption=out['gen_caption']),
+                "gen_audio": wandb.Audio(gen_audio, sample_rate=24000, caption=gen_caption),
                 "mfu": running_mfu*100, # convert to percentage
             })
         if save_checkpoint and iter_num > 0 and iter_num % save_interval == 0:

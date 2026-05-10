@@ -49,6 +49,9 @@ class JointTokenizer:
             eos_idx = eos_mask.nonzero(as_tuple=True)[1].min().item()
             audio_ids = audio_ids[:, :eos_idx]
 
+        if audio_ids.numel() == 0:
+            return None
+
         # generated sequence is in input space, so convert audio tokens back to output space
         audio_ids = audio_ids - self.audio_offset
         features = self.wav_tokenizer.codes_to_features(audio_ids)
