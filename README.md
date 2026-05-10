@@ -8,7 +8,7 @@
 
 ---
 
-**Update May 2026** Removed speaker IDs, and thus removed the ability to choose a voice at inference time, because this choice prevented us from training on any dataset other than the train-clean-100 split of LibriTTS. This was a huge limitation. Now that the input sequence encoding is even simpler, we can train on any dataset of text-audio pairs and monitor a val loss! I updated the train script to use both clean train splits of LibriTTS (which total ~245 hours).
+**Update May 2026** Removed speaker IDs, and thus removed the ability to choose a voice at inference time, because this choice prevented us from training on any dataset other than the train-clean-100 split of LibriTTS. This was a huge limitation. Now that the input sequence encoding is even simpler, we can train on any dataset of text-audio pairs and monitor a val loss! I updated the train script to use two clean train splits of LibriTTS (which total ~245 hours).
 
 ---
 
