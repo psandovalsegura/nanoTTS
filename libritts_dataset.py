@@ -3,9 +3,10 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
 class TTSDataset(Dataset):
-    def __init__(self, libritts_dataset, tokenizer):
+    def __init__(self, libritts_dataset, tokenizer, max_seq_len=None):
         self.dataset = libritts_dataset
         self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
         self.pad_id = tokenizer.pad_id
         self.astart_id = tokenizer.audio_start_id
         self.in_eos_id = tokenizer.in_eos_id
@@ -16,13 +17,16 @@ class TTSDataset(Dataset):
 
     def __getitem__(self, idx):
         # LibriTTS: waveform, sample_rate, original_text, normalized_text, speaker_id, chapter_id, utterance_id
-        waveform, sr, _, normalized_text, speaker_id, _, _ = self.dataset[idx]
+        waveform, sr, _, normalized_text, _, _, _ = self.dataset[idx]
 
-        prompt_string = f"<BOS>{normalized_text}<SPK_{speaker_id}><AUDIO_START>"
+        prompt_string = f"<BOS>{normalized_text}<AUDIO_START>"
         text_ids = self.tokenizer.encode_text(prompt_string)
         audio_ids = self.tokenizer.encode_audio(waveform)
 
         sequence = text_ids + audio_ids + [self.in_eos_id]
+        if self.max_seq_len is not None and len(sequence) > self.max_seq_len:
+            # Keep the full conditioning prefix and truncate only the tail.
+            sequence = sequence[:self.max_seq_len]
         sequence_tensor = torch.tensor(sequence, dtype=torch.long)
 
         # shift X and Y for NTP

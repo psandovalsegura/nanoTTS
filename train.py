@@ -28,11 +28,13 @@ import math
 import pickle
 import random                 # @psando
 from contextlib import nullcontext
+from pathlib import Path
 
 import torch
 import torchaudio # @psando
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+from torch.utils.data.distributed import DistributedSampler
 
 from model import GPTConfig, GPT
 from libritts_dataset import TTSDataset, create_collate_fn # @psando
@@ -45,7 +47,7 @@ from tokenizer import create_joint_tokenizer
 out_dir = '/fs/nexus-scratch/psando/nanotts'
 eval_interval = 100
 log_interval = 10
-eval_iters = 4
+eval_iters = 50
 eval_only = False      # if True, script exits right after the first eval
 save_checkpoint = True # if True, always save a checkpoint after each eval
 save_interval = 5000   # must be a multiple of eval_interval
@@ -55,10 +57,11 @@ wandb_log = True # disabled by default
 wandb_project = 'nanotts'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
-dataset_root = '/fs/nexus-scratch/psando' # @psando
-dataset_url = 'train-clean-100'           # @psando
-bpe_tokenizer_path = 'tokenizer/libritts_bpe.json'  # @psando
-gradient_accumulation_steps = 1 # TODO: @psando: tune after shard dataset, 4 #5 * 8 # used to simulate larger batch sizes
+dataset_root = '/fs/nexus-scratch/psando'       # @psando
+dataset_train_url = 'train-clean-360'           # @psando
+dataset_dev_url = 'dev-clean'                   # @psando
+bpe_tokenizer_path = 'text_tokenizer/libritts_bpe.json'  # @psando
+gradient_accumulation_steps = 2 # TODO: @psando: tune after shard dataset, 4 #5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 2048                         # @psando
 # @psando: wavtokenizer
@@ -72,8 +75,8 @@ n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
-learning_rate = 0.001 #6e-4 # max learning rate
-max_iters = 600000 # total number of training iterations
+learning_rate = 6e-4 # max learning rate
+max_iters = 50000 # total number of training iterations
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -81,7 +84,7 @@ grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
 warmup_iters = 1000 # TODO: @psando: tune after shard ds, 2000 # how many steps to warm up for
-lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
+lr_decay_iters = 50000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
@@ -98,6 +101,7 @@ if save_checkpoint:
     assert save_interval % eval_interval == 0, "save_interval must be a multiple of eval_interval to save checkpoints"
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+ddp_rank = 0
 if ddp:
     init_process_group(backend=backend)
     ddp_rank = int(os.environ['RANK'])
@@ -119,8 +123,8 @@ else:
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
+out_dir = os.path.join(out_dir, wandb_run_name)
 if master_process:
-    out_dir = os.path.join(out_dir, wandb_run_name)
     os.makedirs(out_dir, exist_ok=True)
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
@@ -131,9 +135,14 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # @psando: add libritts dataset and wavtokenizer
-libritts_dataset = torchaudio.datasets.LIBRITTS(
+train_dataset = torchaudio.datasets.LIBRITTS(
     root=dataset_root,
-    url=dataset_url,
+    url=dataset_train_url,
+    download=False,
+)
+val_dataset = torchaudio.datasets.LIBRITTS(
+    root=dataset_root,
+    url=dataset_dev_url,
     download=False,
 )
 
@@ -148,51 +157,91 @@ if not hasattr(wavtokenizer, 'bandwidth_id'):
 
 joint_tokenizer = create_joint_tokenizer(bpe_tokenizer_path, wavtokenizer)
 
-tts_dataset = TTSDataset(
-    libritts_dataset=libritts_dataset,
+# Train dataset and dataloader
+train_tts_dataset = TTSDataset(
+    libritts_dataset=train_dataset,
     tokenizer=joint_tokenizer,
+    max_seq_len=block_size + 1,
 )
+
+train_sampler = DistributedSampler(
+    train_tts_dataset,
+    num_replicas=ddp_world_size,
+    rank=ddp_rank,
+    shuffle=True,
+) if ddp else None
 
 dataloader = torch.utils.data.DataLoader(
-    tts_dataset, 
+    train_tts_dataset, 
     batch_size=batch_size, 
-    shuffle=True, 
+    shuffle=train_sampler is None,
+    sampler=train_sampler,
     num_workers=4,
-    collate_fn=create_collate_fn(tts_dataset.pad_id)
+    collate_fn=create_collate_fn(train_tts_dataset.pad_id)
 )
 
-dataloader_iter = iter(dataloader)
-dataloader_iter_estimate = iter(dataloader)
+# Test dataset and dataloader
+val_tts_dataset = TTSDataset(
+    libritts_dataset=val_dataset,
+    tokenizer=joint_tokenizer,
+    max_seq_len=block_size + 1,
+)
 
-# @psando: validation will just choose one of a few prompts, and a random speaker id
-val_prompts = ['The Law.', 'The cat sat on the mat.', 'My name is Pedro Sandoval Segura.', 'Nano text to speech was created at University of Maryland.', 'Created at University of Maryland']
-val_speaker_ids = [19, 26, 27]
+val_dataloader = torch.utils.data.DataLoader(
+    val_tts_dataset,
+    batch_size=batch_size,
+    shuffle=False,
+    num_workers=4,
+    collate_fn=create_collate_fn(val_tts_dataset.pad_id)
+)
+
+main_train_dataloader_iter = iter(dataloader)          # @psando: main train iterator
+estimate_train_dataloader_iter = iter(dataloader)      # @psando: for eval on train split
+val_dataloader_iter = iter(val_dataloader)           # @psando: for eval on validation split
+batch_sources = {
+    'train': {
+        'dataloader': dataloader,
+        'iterator': main_train_dataloader_iter,
+    },
+    'estimate_train': {
+        'dataloader': dataloader,
+        'iterator': estimate_train_dataloader_iter,
+    },
+    'val': {
+        'dataloader': val_dataloader,
+        'iterator': val_dataloader_iter,
+    },
+}
+train_epoch = 0
+
+# @psando: for OOD testing we'll choose one of a few prompts
+ood_prompts = ['The Law.', 'The cat sat on the mat.', 'My name is Pedro Sandoval Segura.', 'Nano text to speech was created at University of Maryland.', 'Created at University of Maryland']
 
 def get_batch(split):
-    global dataloader_iter
-    global dataloader_iter_estimate
-    if split == 'train':
-        try:
-            batch = next(dataloader_iter)            
-        except StopIteration:
-            dataloader_iter = iter(dataloader) # @psando: new epoch
-            batch = next(dataloader_iter)
-        batch = tuple(b.pin_memory().to(device, non_blocking=True) for b in batch)
-    elif split == 'estimate_train':
-        try:
-            batch = next(dataloader_iter_estimate)            
-        except StopIteration:
-            dataloader_iter_estimate = iter(dataloader) # @psando: new epoch
-            batch = next(dataloader_iter_estimate)
-        batch = tuple(b.pin_memory().to(device, non_blocking=True) for b in batch)
+    global train_epoch
+
+    if split not in batch_sources:
+        raise ValueError(f"Unknown split: {split}")
+
+    source = batch_sources[split]
+    try:
+        batch = next(source['iterator'])
+    except StopIteration:
+        if split == 'train':
+            train_epoch += 1
+            if train_sampler is not None:
+                train_sampler.set_epoch(train_epoch)
+        source['iterator'] = iter(source['dataloader']) # @psando: new epoch
+        batch = next(source['iterator'])
+
+    batch = tuple(b.pin_memory().to(device, non_blocking=True) for b in batch)
     return batch
 
-def get_val_batch():
-    normalized_text = random.choice(val_prompts)
-    speaker_id = random.choice(val_speaker_ids)
-    prompt_string = f"<BOS>{normalized_text}<SPK_{speaker_id}><AUDIO_START>"
+def get_ood_batch():
+    normalized_text = random.choice(ood_prompts)
+    prompt_string = f"<BOS>{normalized_text}<AUDIO_START>"
     text_ids = joint_tokenizer.encode_text(prompt_string)
-    caption = f'spk_{speaker_id}_{normalized_text.replace(" ", "_")}'
+    caption = normalized_text
     batch = torch.tensor(text_ids, dtype=torch.long).unsqueeze(0).to(device)
     return batch, caption
 
@@ -209,9 +258,15 @@ if init_from == 'scratch':
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf, joint_tokenizer) # @psando
 elif init_from == 'resume':
-    print(f"Resuming training from {out_dir}")
-    # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    # resume training from the latest numbered checkpoint.
+    checkpoint_paths = sorted(
+        Path(out_dir).glob('ckpt_*.pt'),
+        key=lambda path: int(path.stem.split('_')[-1]),
+    )
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"No numbered checkpoints found in {out_dir}")
+    ckpt_path = checkpoint_paths[-1]
+    print(f"Resuming training from {ckpt_path}")
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
@@ -230,7 +285,8 @@ elif init_from == 'resume':
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
-    best_val_loss = checkpoint['best_val_loss']
+else:
+    raise ValueError(f"Invalid init_from value: {init_from}")
 # @psando: removed the option to initialize from pretrained gpt2
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
@@ -259,20 +315,21 @@ if ddp:
 
 # @psando: validate performance through generation
 @torch.no_grad()
-def estimate_val():
+def estimate_loss():
     out = {}
     model.eval()
-    losses = torch.zeros(eval_iters)
-    for k in range(eval_iters):
-        X, Y = get_batch('estimate_train')
-        with ctx:
-            _, loss = model(X, Y)
-        losses[k] = loss.item()
-    out['estimate_train'] = losses.mean()
+    for split in ['estimate_train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            with ctx:
+                _, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
 
-    # generate an audio sample
-    val, caption = get_val_batch()
-    val_cont = model.generate(val, max_new_tokens=500, temperature=0.8, top_k=50)
+    # additionally generate an ood audio sample
+    val, caption = get_ood_batch()
+    val_cont = raw_model.generate(val, max_new_tokens=500, temperature=0.8, top_k=50)
     out['gen_audio'] = joint_tokenizer.decode(val_cont.cpu())
     out['gen_caption'] = caption
     model.train()
@@ -312,29 +369,30 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        out = estimate_val()
-        print(f"step {iter_num}: train loss {out['estimate_train']:.4f}")
+        out = estimate_loss()
+        print(f"step {iter_num}: train loss {out['estimate_train']:.4f}, val loss {out['val']:.4f}")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
+                "epoch": train_epoch,
                 "train_loss": out['estimate_train'],
+                "val_loss": out['val'],
                 "lr": lr,
                 "gen_audio": wandb.Audio(out['gen_audio'].numpy().T, sample_rate=24000, caption=out['gen_caption']),
                 "mfu": running_mfu*100, # convert to percentage
             })
         if save_checkpoint and iter_num > 0 and iter_num % save_interval == 0:
-            # best_val_loss = losses['val']
-            if iter_num > 0:
-                checkpoint = {
-                    'model': raw_model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'model_args': model_args,
-                    'iter_num': iter_num,
-                    'train_loss': out['estimate_train'],
-                    'config': config,
-                }
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, f'ckpt_{iter_num:06d}.pt'))
+            checkpoint = {
+                'model': raw_model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'model_args': model_args,
+                'iter_num': iter_num,
+                'train_loss': out['estimate_train'],
+                'val_loss': out['val'],
+                'config': config,
+            }
+            print(f"saving checkpoint to {out_dir}")
+            torch.save(checkpoint, os.path.join(out_dir, f'ckpt_{iter_num:06d}.pt'))
     if iter_num == 0 and eval_only:
         break
 

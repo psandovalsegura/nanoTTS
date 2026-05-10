@@ -1,50 +1,53 @@
 import string
-import pickle
+import json
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import Whitespace
+from tokenizers.pre_tokenizers import Metaspace
+from tokenizers.decoders import Metaspace as MetaspaceDecoder
 
-# 0. load the transcripts and speaker IDs from the previous step
-with open("libritts_tokenizer_data.pkl", "rb") as f:
-    data = pickle.load(f)
+# 0. load the normalized transcripts from the splits we'll be using for training
+split_names = ['train-clean-100', 'train-clean-360']
+with open(f"{split_names[0]}.json", "r") as f:
+    split0 = json.load(f)
 
-all_transcripts = data["all_transcripts"] # list of 33236 normalized transcripts in libritts 'train-clean-100' subset
-speaker_ids = data["speaker_ids"]         # set of 247 unique speaker IDs in libritts 'train-clean-100' subset
+with open(f"{split_names[1]}.json", "r") as f:
+    split1 = json.load(f)
+
+all_transcripts = split0["transcripts"] + split1["transcripts"] # list of 33236+116500 normalized transcripts in libritts split_names
+print(f"Loaded {len(all_transcripts)} transcripts from {split_names}")
 
 # 1. core special tokens. <UNK> is required by the BPE model. 
 core_specials = ["<UNK>", "<PAD>", "<BOS>", "<EOS>", "<AUDIO_START>"]
 
 # 2. initialize a BPE Tokenizer
 tokenizer = Tokenizer(BPE(unk_token="<UNK>"))
-tokenizer.pre_tokenizer = Whitespace()
+tokenizer.pre_tokenizer = Metaspace(replacement="▁", prepend_scheme="always")
+tokenizer.decoder = MetaspaceDecoder(replacement="▁", prepend_scheme="always")
 
-# 3. configure the Trainer for exactly 2048 tokens after adding the speaker tokens
+# 3. configure the Trainer for exactly 2048 tokens, starting with the alphabet, digits, punctuation, and metaspace marker
 LIBRITTS_VOCAB_SIZE = 2048 
-alphabet = list(string.ascii_letters + string.digits + string.punctuation)
+alphabet = list(string.ascii_letters + string.digits + string.punctuation + "▁")
 
 trainer = BpeTrainer(
-    vocab_size=LIBRITTS_VOCAB_SIZE - len(speaker_ids),
+    vocab_size=LIBRITTS_VOCAB_SIZE,
     initial_alphabet=alphabet,
     special_tokens=core_specials,
     show_progress=True
 )
 
 tokenizer.train_from_iterator(all_transcripts, trainer=trainer)
-
-# 5. create and append the speaker tokens. sort to ensure the mapping is consistent every time
-sorted_spk_ids = sorted(list(speaker_ids))
-speaker_tokens = [f"<SPK_{spk}>" for spk in sorted_spk_ids]
-tokenizer.add_special_tokens(speaker_tokens)
 tokenizer.save("libritts_bpe.json")
 
 # ==========================================
 # Tests
 # ==========================================
-assert tokenizer.get_vocab_size(with_added_tokens=False) == LIBRITTS_VOCAB_SIZE - len(speaker_ids), f'text vocab size should be {LIBRITTS_VOCAB_SIZE - len(speaker_ids)}'
+assert tokenizer.get_vocab_size(with_added_tokens=False) == LIBRITTS_VOCAB_SIZE, f'text vocab size should be {LIBRITTS_VOCAB_SIZE}'
 assert tokenizer.get_vocab_size(with_added_tokens=True) == LIBRITTS_VOCAB_SIZE, f'total vocab size should be {LIBRITTS_VOCAB_SIZE}'
-assert tokenizer.token_to_id(speaker_tokens[0]) == LIBRITTS_VOCAB_SIZE - len(speaker_ids), f'first speaker token ID should be {LIBRITTS_VOCAB_SIZE - len(speaker_ids)}'
+assert tokenizer.token_to_id("▁") is not None, "metaspace marker should be in vocab"
 
-test_string = f"<BOS>Hello world!<SPK_19><AUDIO_START><EOS><PAD><PAD>"
+test_string = f"<BOS>Hello world!<AUDIO_START><EOS><PAD><PAD>"
 encoded = tokenizer.encode(test_string)
 print(f"Encoded: {encoded.tokens}")
+decoded = tokenizer.decode(encoded.ids)
+print(f"Decoded: {decoded}")

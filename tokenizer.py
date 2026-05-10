@@ -31,7 +31,7 @@ class JointTokenizer:
             waveform,
             bandwidth_id=self.wav_tokenizer.bandwidth_id,
         )
-        raw_audio_ids = audio_ids.squeeze().tolist()
+        raw_audio_ids = audio_ids.reshape(-1).tolist()
         return [audio_id + self.audio_offset for audio_id in raw_audio_ids]
 
     def decode(self, sequence):
