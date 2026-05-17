@@ -44,7 +44,7 @@ from tokenizer import create_joint_tokenizer
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
-out_dir = '/fs/nexus-scratch/psando/nanotts-05-10'
+out_dir = '/fs/nexus-scratch/psando/nanotts'
 eval_interval = 100
 log_interval = 10
 eval_iters = 50
@@ -125,7 +125,7 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 config['tokens_per_iter'] = tokens_per_iter
 
 out_dir = os.path.join(out_dir, wandb_run_name)
-if master_process:
+if master_process and save_checkpoint:
     os.makedirs(out_dir, exist_ok=True)
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul

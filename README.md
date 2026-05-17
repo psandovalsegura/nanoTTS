@@ -1,10 +1,14 @@
 # nanoTTS
 
+<p align="center">
+  <a href="https://huggingface.co/spaces/psando/nanoTTS"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-nanoTTS%20Demo-orange" alt="Hugging Face"></a>
+</p>
+
 **goal**: a minimal, simple, hackable text-to-speech (TTS) system using a GPT-2-style transformer decoder.
 
 ![nanoTTS](assets/nanoTTS_overview.jpeg)
 
-**demo**: [here's a sample](https://x.com/psandovalsegura/status/2040905729545220167?s=20) generated after ~9 epochs over 53.78 hours of English text + audio pairs.
+**demo**: [here's a sample](https://x.com/psandovalsegura/status/2040905729545220167?s=20) generated after ~32 epochs over 53.78 hours of English text + audio pairs.
 
 ---
 
