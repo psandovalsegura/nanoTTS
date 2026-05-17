@@ -1,7 +1,7 @@
 # nanoTTS
 
 <p align="center">
-  <a href="https://huggingface.co/spaces/psando/nanoTTS"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-nanoTTS%20Demo-orange" alt="Hugging Face"></a>
+  <a href="https://huggingface.co/spaces/psando/nanoTTS"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Demo-orange" alt="Hugging Face"></a>
 </p>
 
 **goal**: a minimal, simple, hackable text-to-speech (TTS) system using a GPT-2-style transformer decoder.
