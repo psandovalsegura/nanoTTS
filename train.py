@@ -36,7 +36,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.utils.data.distributed import DistributedSampler
 
-from model import GPTConfig, GPT
+from model import GPTConfig, GPT, _get_peak_flops
 from libritts_dataset import TTSDataset, create_collate_fn # @psando
 from decoder.pretrained import WavTokenizer                # @psando 
 from tokenizer import create_joint_tokenizer
@@ -134,6 +134,8 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 # note: float16 data type will automatically use a GradScaler
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+_device_name, _peak_flops = _get_peak_flops()
+print(f'{"using device":>12}: {_device_name}\n{"dtype":>12}: {dtype}\n{"peak FLOPS":>12}: {_peak_flops/1e12:.2f} TFLOPS')
 
 # @psando: add libritts dataset and wavtokenizer
 train_dataset = torch.utils.data.ConcatDataset([

@@ -14,6 +14,20 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+# BF16 peak FLOPS for GPUs we run on; A100 used as fallback for unknowns
+# sources: flopper.io/gpu/nvidia-rtx-a5000-24gb, flopper.io/gpu/nvidia-rtx-a6000-48gb
+_GPU_PEAK_FLOPS = {
+    "NVIDIA RTX A5000": 27.8e12,
+    "NVIDIA RTX A6000": 38.7e12,
+    'NVIDIA A100-SXM4-80GB': 312e12,
+}
+
+def _get_peak_flops():
+    if not torch.cuda.is_available():
+        return None, _GPU_PEAK_FLOPS["NVIDIA A100-SXM4-80GB"]
+    name = torch.cuda.get_device_name()
+    return name, _GPU_PEAK_FLOPS.get(name, _GPU_PEAK_FLOPS["NVIDIA A100-SXM4-80GB"])
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -236,8 +250,7 @@ class GPT(nn.Module):
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
-        # first estimate the number of flops we do per iteration.
+        """ estimate model flops utilization (MFU) as a fraction of GPU BF16 peak FLOPS """
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
         cfg = self.config
@@ -245,9 +258,8 @@ class GPT(nn.Module):
         flops_per_token = 6*N + 12*L*H*Q*T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
-        # express our flops throughput as ratio of A100 bfloat16 peak flops
         flops_achieved = flops_per_iter * (1.0/dt) # per second
-        flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
+        _, flops_promised = _get_peak_flops()
         mfu = flops_achieved / flops_promised
         return mfu
 
