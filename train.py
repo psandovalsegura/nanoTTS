@@ -125,7 +125,7 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 config['tokens_per_iter'] = tokens_per_iter
 
 out_dir = os.path.join(out_dir, wandb_run_name)
-if master_process and save_checkpoint:
+if master_process and save_checkpoint and not eval_only:
     os.makedirs(out_dir, exist_ok=True)
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
@@ -328,20 +328,31 @@ def estimate_loss():
     out = {}
     model.eval()
     batch_sources['val']['iterator'] = iter(val_dataloader)  # reset for deterministic eval
-    for split in ['estimate_train', 'val']:
+    splits = ['val'] if eval_only else ['estimate_train', 'val']
+    for split in splits:
         losses = torch.zeros(eval_iters)
+        total_tokens = 0
+        if device_type == 'cuda':
+            torch.cuda.synchronize()
+        t_start = time.time()
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
                 _, loss = model(X, Y)
             losses[k] = loss.item()
+            total_tokens += X.numel()
+        if device_type == 'cuda':
+            torch.cuda.synchronize()
+        elapsed = time.time() - t_start
         out[split] = losses.mean()
+        out[f'{split}_tok_per_sec'] = total_tokens / elapsed
 
-    # additionally generate an ood audio sample
-    val, caption = get_ood_batch()
-    val_cont = raw_model.generate(val, max_new_tokens=500, temperature=0.8, top_k=50)
-    out['gen_audio'] = joint_tokenizer.decode(val_cont.cpu())
-    out['gen_caption'] = caption
+    if not eval_only:
+        # additionally generate an ood audio sample
+        val, caption = get_ood_batch()
+        val_cont = raw_model.generate(val, max_new_tokens=500, temperature=0.8, top_k=50)
+        out['gen_audio'] = joint_tokenizer.decode(val_cont.cpu())
+        out['gen_caption'] = caption
     model.train()
     return out
 
@@ -360,7 +371,7 @@ def get_lr(it):
     return min_lr + coeff * (learning_rate - min_lr)
 
 # logging
-if wandb_log and master_process:
+if wandb_log and master_process and not eval_only:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
@@ -380,8 +391,11 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         out = estimate_loss()
-        print(f"step {iter_num}: train loss {out['estimate_train']:.4f}, val loss {out['val']:.4f}")
-        if wandb_log:
+        if eval_only:
+            print(f"step {iter_num}: val loss {out['val']:.4f}, val tok/sec {out['val_tok_per_sec']:.1f}")
+        else:
+            print(f"step {iter_num}: train loss {out['estimate_train']:.4f}, val loss {out['val']:.4f}")
+        if wandb_log and not eval_only:
             if out['gen_audio'] is None:
                 gen_audio = torch.zeros(2400, 1).numpy()
                 gen_caption = "error: no audio tokens"
