@@ -47,7 +47,7 @@ from tokenizer import create_joint_tokenizer
 out_dir = '/fs/nexus-scratch/psando/nanotts'
 eval_interval = 100
 log_interval = 10
-eval_iters = 50
+eval_iters = 100       # max=5736/batch_size for dev-clean split, otherwise we'd repeat samples
 eval_only = False      # if True, script exits right after the first eval
 save_checkpoint = True # if True, always save a checkpoint after each eval
 save_interval = 5000   # must be a multiple of eval_interval
@@ -327,6 +327,7 @@ if ddp:
 def estimate_loss():
     out = {}
     model.eval()
+    batch_sources['val']['iterator'] = iter(val_dataloader)  # reset for deterministic eval
     for split in ['estimate_train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
