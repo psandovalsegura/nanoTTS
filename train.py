@@ -23,6 +23,7 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 """
 
 import os
+import json                   # @psando
 import time
 import math
 import pickle
@@ -31,14 +32,13 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
-import torchaudio # @psando
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.utils.data.distributed import DistributedSampler
 
 from model import GPTConfig, GPT, _get_peak_flops
-from libritts_dataset import TTSDataset, create_collate_fn # @psando
-from decoder.pretrained import WavTokenizer                # @psando 
+from pretokenized_dataset import PretokenizedTTSDataset, create_collate_fn # @psando
+from decoder.pretrained import WavTokenizer                                # @psando
 from tokenizer import create_joint_tokenizer
 
 # -----------------------------------------------------------------------------
@@ -57,7 +57,9 @@ wandb_log = True # disabled by default
 wandb_project = 'nanotts'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
 # data
-dataset_root = '/fs/nexus-scratch/psando'       # @psando
+# @psando: dataset_root must point at a pretokenized cache produced by preprocess_audio.py
+# dir structure: {dataset_root}/{split}/{audio_codes.bin, index.npy, texts.jsonl, meta.json}
+dataset_root = '/fs/nexus-scratch/psando/pretokenized/libritts/wavtokenizer_40tok'
 dataset_train_url = 'train-clean-100,train-clean-360'    # @psando: allow training on multiple splits, comma separated
 dataset_dev_url = 'dev-clean'                            # @psando
 bpe_tokenizer_path = 'text_tokenizer/libritts_bpe.json'  # @psando
@@ -66,8 +68,6 @@ batch_size = 24 # if gradient_accumulation_steps > 1, this is the micro-batch si
 block_size = 2048                         # @psando
 # @psando: wavtokenizer
 wavtokenizer_dir = '/fs/nexus-scratch/psando/WavTokenizer'
-wavtokenizer_config = 'wavtokenizer_smalldata_frame40_3s_nq1_code4096_dim512_kmeans200_attn.yaml'
-wavtokenizer_ckpt = 'WavTokenizer_small_600_24k_4096.ckpt'
 # model
 n_layer = 12
 n_head = 12
@@ -137,21 +137,15 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 _device_name, _peak_flops = _get_peak_flops()
 print(f'{"using device":>12}: {_device_name}\n{"dtype":>12}: {dtype}\n{"peak FLOPS":>12}: {_peak_flops/1e12:.2f} TFLOPS')
 
-# @psando: add libritts dataset and wavtokenizer
-train_dataset = torch.utils.data.ConcatDataset([
-    torchaudio.datasets.LIBRITTS(
-        root=dataset_root,
-        url=url,
-        download=False,
-    )
-    for url in dataset_train_url.split(',')
-])
-val_dataset = torchaudio.datasets.LIBRITTS(
-    root=dataset_root,
-    url=dataset_dev_url,
-    download=False,
-)
+# @psando: derive WavTokenizer config/ckpt from the val cache meta.json so the
+# decoder used for eval audio matches the encoder that built the codes on disk.
+_val_meta = json.loads((Path(dataset_root) / dataset_dev_url / 'meta.json').read_text())
+wavtokenizer_config = _val_meta['wavtokenizer_config']
+wavtokenizer_ckpt = _val_meta['wavtokenizer_ckpt']
+config['wavtokenizer_config'] = wavtokenizer_config
+config['wavtokenizer_ckpt'] = wavtokenizer_ckpt
 
+# @psando: load WavTokenizer on CPU; only used at eval time to decode generated audio
 wt_device = torch.device('cpu')
 config_path = os.path.join(wavtokenizer_dir, wavtokenizer_config)
 model_path = os.path.join(wavtokenizer_dir, wavtokenizer_ckpt)
@@ -163,9 +157,18 @@ if not hasattr(wavtokenizer, 'bandwidth_id'):
 
 joint_tokenizer = create_joint_tokenizer(bpe_tokenizer_path, wavtokenizer)
 
-# Train dataset and dataloader
-train_tts_dataset = TTSDataset(
-    libritts_dataset=train_dataset,
+# @psando: build train/val TTS datasets from pre-encoded WavTokenizer codes on disk
+print(f"loading pretokenized audio tokens from {dataset_root}...")
+train_tts_dataset = torch.utils.data.ConcatDataset([
+    PretokenizedTTSDataset(
+        cache_dir=os.path.join(dataset_root, url),
+        tokenizer=joint_tokenizer,
+        max_seq_len=block_size + 1,
+    )
+    for url in dataset_train_url.split(',')
+])
+val_tts_dataset = PretokenizedTTSDataset(
+    cache_dir=os.path.join(dataset_root, dataset_dev_url),
     tokenizer=joint_tokenizer,
     max_seq_len=block_size + 1,
 )
@@ -178,30 +181,23 @@ train_sampler = DistributedSampler(
 ) if ddp else None
 
 dataloader = torch.utils.data.DataLoader(
-    train_tts_dataset, 
-    batch_size=batch_size, 
+    train_tts_dataset,
+    batch_size=batch_size,
     shuffle=train_sampler is None,
     sampler=train_sampler,
     num_workers=4,
-    collate_fn=create_collate_fn(train_tts_dataset.pad_id)
+    collate_fn=create_collate_fn(joint_tokenizer.pad_id)
 )
 
 config['train_dataset_len'] = len(train_tts_dataset)
 print(f"train dataset length: {len(train_tts_dataset):,}")
-
-# Test dataset and dataloader
-val_tts_dataset = TTSDataset(
-    libritts_dataset=val_dataset,
-    tokenizer=joint_tokenizer,
-    max_seq_len=block_size + 1,
-)
 
 val_dataloader = torch.utils.data.DataLoader(
     val_tts_dataset,
     batch_size=batch_size,
     shuffle=False,
     num_workers=4,
-    collate_fn=create_collate_fn(val_tts_dataset.pad_id)
+    collate_fn=create_collate_fn(joint_tokenizer.pad_id)
 )
 
 main_train_dataloader_iter = iter(dataloader)          # @psando: main train iterator
