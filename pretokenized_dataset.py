@@ -79,8 +79,8 @@ class PretokenizedTTSDataset(Dataset):
         X = sequence_tensor[:-1]
         Y = sequence_tensor[1:].clone()
 
-        astart_idx = (X == self.astart_id).nonzero(as_tuple=True)[0].item()
-        Y[:astart_idx] = -100
+        astart_idx = (Y == self.astart_id).nonzero(as_tuple=True)[0].item()
+        Y[:astart_idx + 1] = -100 # @psando: mask text and audio start token in loss
 
         Y[Y >= self.audio_offset] -= self.audio_offset
         Y[Y == self.in_eos_id] = self.out_eos_id
