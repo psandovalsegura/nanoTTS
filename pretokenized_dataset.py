@@ -69,7 +69,7 @@ class PretokenizedTTSDataset(Dataset):
         raw_codes = self.codes[s:e].astype(np.int64)
         audio_ids = (raw_codes + self.audio_offset).tolist()
 
-        text_ids = self.tokenizer.encode_text(f"<BOS>{self.texts[idx]}<AUDIO_START>")
+        text_ids = self.tokenizer.encode_text(f"{self.tokenizer.BOS_TOKEN}{self.texts[idx]}{self.tokenizer.AUDIO_START_TOKEN}")
 
         sequence = text_ids + audio_ids + [self.in_eos_id]
         if self.max_seq_len is not None and len(sequence) > self.max_seq_len:

@@ -62,7 +62,6 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 dataset_root = '/fs/nexus-scratch/psando/pretokenized/libritts/wavtokenizer_40tok'
 dataset_train_url = 'train-clean-100,train-clean-360'    # @psando: allow training on multiple splits, comma separated
 dataset_dev_url = 'dev-clean'                            # @psando
-bpe_tokenizer_path = 'text_tokenizer/libritts_bpe.json'  # @psando
 gradient_accumulation_steps = 2 # TODO: @psando: tune after shard dataset, 4 #5 * 8 # used to simulate larger batch sizes
 batch_size = 24 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 2048                         # @psando
@@ -153,7 +152,7 @@ bandwidth_id = torch.tensor([0], device=wt_device)
 if not hasattr(wavtokenizer, 'bandwidth_id'):
     wavtokenizer.bandwidth_id = bandwidth_id
 
-joint_tokenizer = create_joint_tokenizer(bpe_tokenizer_path, wavtokenizer)
+joint_tokenizer = create_joint_tokenizer(wavtokenizer)
 
 # @psando: build train/val TTS datasets from pre-encoded WavTokenizer codes on disk
 print(f"loading pretokenized audio tokens from {dataset_root}...")
@@ -242,7 +241,7 @@ def get_batch(split):
 
 def get_ood_batch():
     normalized_text = random.choice(ood_prompts)
-    prompt_string = f"<BOS>{normalized_text}<AUDIO_START>"
+    prompt_string = f"{joint_tokenizer.BOS_TOKEN}{normalized_text}{joint_tokenizer.AUDIO_START_TOKEN}"
     text_ids = joint_tokenizer.encode_text(prompt_string)
     caption = normalized_text
     batch = torch.tensor(text_ids, dtype=torch.long).unsqueeze(0).to(device)

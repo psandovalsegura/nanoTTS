@@ -1,30 +1,47 @@
-from tokenizers import Tokenizer
+import math
+import tiktoken
 
 
 class JointTokenizer:
-    def __init__(self, text_tokenizer, wav_tokenizer):
-        self.text_tokenizer = text_tokenizer
+    def __init__(self, wav_tokenizer):
         self.wav_tokenizer = wav_tokenizer
 
-        self.pad_id = self.text_tokenizer.token_to_id("<PAD>")
-        self.audio_start_id = self.text_tokenizer.token_to_id("<AUDIO_START>")
-        self.in_eos_id = self.text_tokenizer.token_to_id("<EOS>")
+        self.EOS_TOKEN         = "<|endoftext|>"
+        self.BOS_TOKEN         = "<|beginoftext|>"
+        self.AUDIO_START_TOKEN = "<|audio|>"
 
-        self.text_vocab_size = self.text_tokenizer.get_vocab_size(with_added_tokens=True)
+        gpt2 = tiktoken.get_encoding("gpt2")
+        # gpt2's only special, <|endoftext|>, is already at gpt2.eot_token;
+        # place the new specials right after gpt2's existing range.
+        special_tokens = {
+            self.EOS_TOKEN:         gpt2.eot_token,
+            self.BOS_TOKEN:         gpt2.n_vocab,
+            self.AUDIO_START_TOKEN: gpt2.n_vocab + 1,
+        }
+        self.text_tokenizer = tiktoken.Encoding(
+            name="gpt2_tts",
+            pat_str=gpt2._pat_str,
+            mergeable_ranks=gpt2._mergeable_ranks,
+            special_tokens=special_tokens,
+        )
+        self.pad_id         = self.text_tokenizer.encode_single_token(self.EOS_TOKEN)
+        self.in_eos_id      = self.text_tokenizer.encode_single_token(self.EOS_TOKEN)
+        self.bos_id         = self.text_tokenizer.encode_single_token(self.BOS_TOKEN)
+        self.audio_start_id = self.text_tokenizer.encode_single_token(self.AUDIO_START_TOKEN)
+
         self.audio_vocab_size = self.wav_tokenizer.feature_extractor.encodec.quantizer.bins
+        self.text_vocab_size = self.text_tokenizer.n_vocab
         self.audio_offset = self.text_vocab_size
-        self.in_vocab_size = self.text_vocab_size + self.audio_vocab_size
+        # @psando: pad in_vocab_size up to a multiple of 64 for GPU efficiency
+        #          TODO: out_vocab_size should be padded too, but requires model.py generate changes
+        self.in_vocab_size = math.ceil((self.text_vocab_size + self.audio_vocab_size) / 64) * 64
         self.out_vocab_size = self.audio_vocab_size + 1 # @psando: +1 for EOS
         self.out_eos_id = self.audio_vocab_size         # @psando: last output id
 
-        assert self.pad_id is not None
-        assert self.audio_start_id is not None
-        assert self.in_eos_id is not None
-        assert self.out_eos_id is not None
         assert self.audio_vocab_size > 0
 
     def encode_text(self, text):
-        return self.text_tokenizer.encode(text).ids
+        return self.text_tokenizer.encode(text, allowed_special="all") # @psando: allowed_special='all' important if we include special token NV tags
 
     def encode_audio(self, waveform):
         _, audio_ids = self.wav_tokenizer.encode_infer(
@@ -61,6 +78,5 @@ class JointTokenizer:
         )
 
 
-def create_joint_tokenizer(tokenizer_path, wav_tokenizer):
-    text_tokenizer = Tokenizer.from_file(tokenizer_path)
-    return JointTokenizer(text_tokenizer=text_tokenizer, wav_tokenizer=wav_tokenizer)
+def create_joint_tokenizer(wav_tokenizer):
+    return JointTokenizer(wav_tokenizer=wav_tokenizer)
