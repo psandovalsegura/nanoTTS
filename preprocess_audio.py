@@ -34,6 +34,16 @@ from dataset_builders import BUILDERS, Sample
 
 
 PREPROCESS_AUDIO_VERSION = "2"
+WAVTOKENIZER_FILES = {
+    40: (
+        "wavtokenizer_smalldata_frame40_3s_nq1_code4096_dim512_kmeans200_attn.yaml",
+        "WavTokenizer_small_600_24k_4096.ckpt",
+    ),
+    75: (
+        "wavtokenizer_smalldata_frame75_3s_nq1_code4096_dim512_kmeans200_attn.yaml",
+        "WavTokenizer_small_320_24k_4096.ckpt",
+    ),
+}
 
 
 def parse_args():
@@ -43,8 +53,8 @@ def parse_args():
     p.add_argument("--dataset-root", required=True, help="root passed to the builder")
     p.add_argument("--output-dir", required=True, help="cache root")
     p.add_argument("--wavtokenizer-dir", required=True)
-    p.add_argument("--wavtokenizer-config", required=True, help="YAML filename inside --wavtokenizer-dir")
-    p.add_argument("--wavtokenizer-ckpt", required=True, help="checkpoint filename inside --wavtokenizer-dir")
+    p.add_argument("--token-rate", required=True, type=int, choices=[40, 75],
+                   help="WavTokenizer frame rate (Hz); selects config + checkpoint")
     p.add_argument("--audio-tokenizer-tag", default=None,
                    help="subdir name; defaults to wavtokenizer_{frame_rate}tok")
     p.add_argument("--batch-size", type=int, default=16,
@@ -87,8 +97,9 @@ def collate(samples: list[Sample]):
 def main():
     args = parse_args()
 
-    config_path = Path(args.wavtokenizer_dir) / args.wavtokenizer_config
-    ckpt_path = Path(args.wavtokenizer_dir) / args.wavtokenizer_ckpt
+    config_name, ckpt_name = WAVTOKENIZER_FILES[args.token_rate]
+    config_path = Path(args.wavtokenizer_dir) / config_name
+    ckpt_path = Path(args.wavtokenizer_dir) / ckpt_name
     assert config_path.exists(), f"config not found: {config_path}"
     assert ckpt_path.exists(), f"ckpt not found: {ckpt_path}"
 
@@ -182,8 +193,8 @@ def main():
     meta = {
         "dataset_name": args.dataset,
         "split": args.split,
-        "wavtokenizer_config": args.wavtokenizer_config,
-        "wavtokenizer_ckpt": args.wavtokenizer_ckpt,
+        "wavtokenizer_config": config_name,
+        "wavtokenizer_ckpt": ckpt_name,
         "wavtokenizer_config_sha256": sha256_file(config_path),
         "wavtokenizer_ckpt_sha256": sha256_file(ckpt_path),
         "audio_tokenizer_tag": tag,
