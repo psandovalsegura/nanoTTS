@@ -8,7 +8,7 @@
 
 ![nanoTTS](assets/nanoTTS_overview.jpeg)
 
-**demo**: [here's a sample](https://x.com/psandovalsegura/status/2040905729545220167?s=20) generated after ~32 epochs over 53.78 hours of English text + audio pairs.
+**demo**: [here's a sample](https://x.com/psandovalsegura/status/2063750412860011005?s=20) generated after ~8 epochs over ~555 hours of English text + audio pairs.
 
 **key design decisions**:
 1. look like an LLM: tokens in, tokens out. no extra modules, no added complexity.
